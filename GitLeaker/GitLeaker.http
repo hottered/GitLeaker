@@ -1,0 +1,6 @@
+@GitLeaker_HostAddress = http://localhost:5075
+
+GET {{GitLeaker_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

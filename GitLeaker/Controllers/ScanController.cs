@@ -1,6 +1,5 @@
 using GitLeaker.Models;
 using GitLeaker.Services;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 namespace GitLeaker.Controllers

@@ -1,0 +1,50 @@
+## 🔧 Build output
+bin/
+obj/
+
+## 🔧 Visual Studio / Rider
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# JetBrains Rider
+.idea/
+*.DotSettings.user
+
+## 🔧 Logs / runtime artifacts
+*.log
+
+## 🔧 Publish output
+publish/
+*.publish/
+
+## 🔧 OS files
+.DS_Store
+Thumbs.db
+
+## 🔧 .NET coverage / test results
+TestResults/
+*.coverage
+*.coveragexml
+
+## 🔧 NuGet
+*.nupkg
+*.snupkg
+packages/
+
+## 🔧 Secret / local config
+appsettings.*.Local.json
+appsettings.Development.json
+secrets.json
+
+## 🔧 Sourcelink / debug artifacts
+*.pdb
+*.dll
+*.exe
+*.cache.json
+
+## 🔧 Misc
+*.swp
+*.tmp

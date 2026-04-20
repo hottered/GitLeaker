@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("GitLeaker")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8920b16944f00c6e5c94c86c601058efb3cc304e")]
 [assembly: System.Reflection.AssemblyProductAttribute("GitLeaker")]
 [assembly: System.Reflection.AssemblyTitleAttribute("GitLeaker")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

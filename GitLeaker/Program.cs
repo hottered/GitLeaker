@@ -1,4 +1,5 @@
 using GitLeaker.Services;
+using GitLeaker.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -8,11 +9,11 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-builder.Services.AddSingleton<EntropyService>();
-builder.Services.AddSingleton<PatternService>();
-builder.Services.AddScoped<ScannerService>();
-builder.Services.AddScoped<GitService>();
-builder.Services.AddScoped<ReportService>();
+builder.Services.AddSingleton<IEntropyService, EntropyService>();
+builder.Services.AddSingleton<IGitService, GitService>();
+builder.Services.AddSingleton<IPatternService, PatternService>();
+builder.Services.AddSingleton<IReportService, ReportService>();
+builder.Services.AddSingleton<IScannerService, ScannerService>();
 
 builder.Services.AddCors(options =>
 {

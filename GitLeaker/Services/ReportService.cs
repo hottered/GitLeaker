@@ -1,8 +1,9 @@
 using GitLeaker.Models;
+using GitLeaker.Services.Interfaces;
 
 namespace GitLeaker.Services;
 
-public class ReportService
+public class ReportService : IReportService
 {
     public ScanSummary GenerateSummary(ScanResult scan)
     {

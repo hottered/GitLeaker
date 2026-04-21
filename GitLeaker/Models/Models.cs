@@ -135,3 +135,25 @@ public class TimelinePoint
     public int Count { get; set; }
     public int Critical { get; set; }
 }
+
+public record GitCommit(
+    string Hash,
+    string Author,
+    string Email,
+    DateTime Date,
+    string Branch,
+    string Message,
+    List<(string FilePath, int LineNumber, string Content)> ChangedLines
+);
+
+public record EntropyCheckRequest(string Input);
+
+public record SecretPattern(
+    string Name,
+    string Regex,
+    RiskLevel Risk,
+    string Remediation,
+    bool RequireEntropy = false,
+    double MinEntropy = 3.0
+);
+

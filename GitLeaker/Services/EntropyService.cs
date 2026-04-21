@@ -1,6 +1,8 @@
+using GitLeaker.Services.Interfaces;
+
 namespace GitLeaker.Services;
 
-public class EntropyService
+public class EntropyService : IEntropyService
 {
     // Shannon Entropy: H = -sum(p(x) * log2(p(x)))
     public double Calculate(string input)

@@ -1,20 +1,11 @@
 using System.Text.RegularExpressions;
 using GitLeaker.Models;
+using GitLeaker.Services.Interfaces;
 
 namespace GitLeaker.Services;
-
-public record SecretPattern(
-    string Name,
-    string Regex,
-    RiskLevel Risk,
-    string Remediation,
-    bool RequireEntropy = false,
-    double MinEntropy = 3.0
-);
-
-public class PatternService
+public class PatternService : IPatternService
 {
-        public readonly List<SecretPattern> Patterns = new()
+    public List<SecretPattern> Patterns { get; } = new()
     {
         // Cloud Providers
         new("AWS Access Key", @"(?i)(aws_access_key_id|aws_key)[^\w]*(=|:)\s*['""]?(AKIA[0-9A-Z]{16})['""]?",
@@ -100,7 +91,7 @@ public class PatternService
         new("Mailgun API Key", @"key-[a-zA-Z0-9]{32}",
             RiskLevel.High, "Rotate at app.mailgun.com/app/account/security/api_keys."),
     };
- 
+
     public List<(SecretPattern pattern, Match match)> Scan(string line)
     {
         var results = new List<(SecretPattern, Match)>();

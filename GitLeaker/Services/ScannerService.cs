@@ -1,17 +1,21 @@
 using GitLeaker.Models;
+using GitLeaker.Services.Interfaces;
 
 namespace GitLeaker.Services;
 
-public class ScannerService
+public class ScannerService : IScannerService
 {
-    private readonly EntropyService _entropy;
-    private readonly PatternService _patterns;
-    private readonly GitService _git;
+    private readonly IEntropyService _entropy;
+    private readonly IPatternService _patterns;
+    private readonly IGitService _git;
  
     // In-memory store for MVP (replace with DB in production)
     private static readonly Dictionary<string, ScanResult> _scans = new();
  
-    public ScannerService(EntropyService entropy, PatternService patterns, GitService git)
+    public ScannerService(
+        IEntropyService entropy,
+        IPatternService patterns,
+        IGitService git)
     {
         _entropy = entropy;
         _patterns = patterns;

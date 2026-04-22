@@ -8,6 +8,7 @@ public class ScannerService : IScannerService
     private readonly IEntropyService _entropy;
     private readonly IPatternService _patterns;
     private readonly IGitService _git;
+    private readonly ITokenService   _token;
  
     // In-memory store for MVP (replace with DB in production)
     private static readonly Dictionary<string, ScanResult> _scans = new();
@@ -15,17 +16,22 @@ public class ScannerService : IScannerService
     public ScannerService(
         IEntropyService entropy,
         IPatternService patterns,
-        IGitService git)
+        IGitService git,
+        ITokenService token)
     {
         _entropy = entropy;
         _patterns = patterns;
         _git = git;
+        _token    = token;
     }
  
     public async Task<string> StartScanAsync(ScanRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.RepoPath) && string.IsNullOrWhiteSpace(request.RepoUrl))
             throw new ArgumentException("Either RepoPath (local) or RepoUrl (remote) must be provided.");
+        
+        if (string.IsNullOrWhiteSpace(request.AccessToken))
+            request.AccessToken = await _token.GetGitHubTokenAsync();
  
         var displayName = request.IsRemote
             ? request.RepoUrl!

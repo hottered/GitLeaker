@@ -38,17 +38,17 @@ public class ScanController : ControllerBase
     [HttpPost("start")]
     public async Task<IActionResult> StartScan([FromBody] ScanRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.RepoPath) &&
-            string.IsNullOrWhiteSpace(request.RepoUrl))
-        {
-            return BadRequest(new
-            {
-                error = "Provide either 'repoPath' (local directory) or 'repoUrl' (remote git URL)."
-            });
-        }
+        // if (string.IsNullOrWhiteSpace(request.RepoPath) &&
+        //     string.IsNullOrWhiteSpace(request.RepoUrl))
+        // {
+        //     return BadRequest(new
+        //     {
+        //         error = "Provide either 'repoPath' (local directory) or 'repoUrl' (remote git URL)."
+        //     });
+        // }
  
-        try
-        {
+        // try
+        // {
             var scanId = await _scanner.StartScanAsync(request);
             return Ok(new
             {
@@ -58,11 +58,11 @@ public class ScanController : ControllerBase
                     ? $"Cloning and scanning {request.RepoUrl}..."
                     : "Scan started successfully."
             });
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
+        // }
+        // catch (ArgumentException ex)
+        // {
+        //     return BadRequest(new { error = ex.Message });
+        // }
     }
  
     /// <summary>

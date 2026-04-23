@@ -1,4 +1,5 @@
 using AspNet.Security.OAuth.GitHub;
+using GitLeaker.Middlewares;
 using GitLeaker.Services;
 using GitLeaker.Services.Interfaces;
 using Microsoft.AspNetCore.Authentication;
@@ -35,7 +36,7 @@ builder.Services.AddAuthentication(options =>
     options.ExpireTimeSpan     = TimeSpan.FromDays(7);
     options.SlidingExpiration  = true;
 
-    // API vraća 401 umesto redirect-a — frontend sam odlučuje šta da radi
+    // API return 401 - front will handle what next ????
     options.Events.OnRedirectToLogin = ctx =>
     {
         ctx.Response.StatusCode = 401;
@@ -46,11 +47,11 @@ builder.Services.AddAuthentication(options =>
 {
     options.ClientId     = builder.Configuration["GitHub:ClientId"]!;
     options.ClientSecret = builder.Configuration["GitHub:ClientSecret"]!;
-    options.CallbackPath = builder.Configuration["GitHub:CallbackPath"]; // /auth/callback
-    options.SaveTokens   = true; // ✅ Token se čuva u cookie automatski
+    options.CallbackPath = builder.Configuration["GitHub:CallbackPath"]; 
+    options.SaveTokens   = true; 
     options.Scope.Add("repo");
 
-    // GitHub username i avatar dostupni u User.Claims
+    // some properties from the retrieved user
     options.ClaimActions.MapJsonKey("urn:github:login",  "login");
     options.ClaimActions.MapJsonKey("urn:github:avatar", "avatar_url");
 });
@@ -66,6 +67,8 @@ builder.Services.AddCors(options =>
 
 
 var app = builder.Build();
+
+app.UseMiddleware<ExceptionMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {

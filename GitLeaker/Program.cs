@@ -22,6 +22,11 @@ builder.Services.AddScoped<IReportService, ReportService>();
 builder.Services.AddScoped<IScannerService, ScannerService>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 
+builder.Services.AddHttpClient("github", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;

@@ -1,70 +1,183 @@
 using System.Diagnostics;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitLeaker.Models;
 using GitLeaker.Services.Interfaces;
 
 namespace GitLeaker.Services;
 
-
 public class GitService : IGitService
 {
     private readonly ILogger<GitService> _logger;
- 
-    public GitService(ILogger<GitService> logger)
+    private readonly IHttpClientFactory _httpClientFactory;
+
+    public GitService(ILogger<GitService> logger, IHttpClientFactory httpClientFactory)
     {
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
     }
- 
+
     // ─────────────────────────────────────────────
-    //  REMOTE REPO SUPPORT
+    //  REMOTE: GITHUB API (no cloning)
     // ─────────────────────────────────────────────
- 
+
     /// <summary>
-    /// Clones a remote repository into a temp directory and returns the path.
-    /// The ScannerService is responsible for calling CleanupTempDir() when done.
-    /// Supports GitHub, GitLab, Bitbucket, Azure DevOps, and any generic git URL.
-    /// For private repos, pass an access token (GitHub PAT, GitLab PAT, Bitbucket app password).
+    /// Streams commits + their diffs directly from the GitHub API.
+    /// No temp directories, no git binary, no cleanup needed.
     /// </summary>
-    public async Task<(string path, string error)> CloneRemoteRepo(
+    public async Task<IAsyncEnumerable<GitCommit>> GetCommitsFromApiAsync(
         string repoUrl,
-        string? accessToken,
-        RepoProvider provider = RepoProvider.Auto)
+        string accessToken,
+        string? branch = null,
+        int? daysBack = null,
+        bool allBranches = false)
     {
-        var tempPath = Path.Combine(
-            Path.GetTempPath(),
-            "leakradar_" + Guid.NewGuid().ToString("N")[..12]);
- 
-        Directory.CreateDirectory(tempPath);
- 
-        try
+        var (owner, repo) = ParseOwnerRepo(repoUrl);
+        return FetchCommitsFromApiAsync(owner, repo, accessToken, branch, daysBack, allBranches);
+    }
+
+    private async IAsyncEnumerable<GitCommit> FetchCommitsFromApiAsync(
+        string owner,
+        string repo,
+        string accessToken,
+        string? branch,
+        int? daysBack,
+        bool allBranches)
+    {
+        var branches = allBranches
+            ? await GetApiBranches(owner, repo, accessToken)
+            : new List<string> { branch ?? await GetDefaultBranch(owner, repo, accessToken) };
+
+        var seenCommits = new HashSet<string>();
+
+        foreach (var branchName in branches)
         {
-            var cloneUrl = BuildAuthenticatedUrl(repoUrl, accessToken, provider);
-            _logger.LogInformation("Cloning {Url} into {Path}", SanitizeUrlForLog(repoUrl), tempPath);
- 
-            // --no-single-branch fetches all remote branches so we can scan them all
-            var args = $"clone --no-single-branch \"{cloneUrl}\" \"{tempPath}\"";
-            var (_, stderr, exitCode) = await RunGitCommandRaw(null, args);
- 
-            if (exitCode != 0)
+            var page = 1;
+
+            while (true)
             {
-                CleanupTempDir(tempPath);
-                return ("", ParseGitError(stderr, repoUrl));
+                var queryParams = new List<string>
+                {
+                    $"sha={Uri.EscapeDataString(branchName)}",
+                    $"per_page=100",
+                    $"page={page}"
+                };
+
+                if (daysBack.HasValue)
+                {
+                    var since = DateTime.UtcNow.AddDays(-daysBack.Value).ToString("o");
+                    queryParams.Add($"since={Uri.EscapeDataString(since)}");
+                }
+
+                var listUrl = $"https://api.github.com/repos/{owner}/{repo}/commits?{string.Join("&", queryParams)}";
+                var commitList = await ApiGetJson<JsonElement>(listUrl, accessToken);
+
+                if (commitList.ValueKind != JsonValueKind.Array) break;
+
+                var commits = commitList.EnumerateArray().ToList();
+                if (commits.Count == 0) break;
+
+                foreach (var c in commits)
+                {
+                    var sha = c.GetProperty("sha").GetString()!;
+                    if (!seenCommits.Add(sha)) continue; // deduplicate across branches
+
+                    var commit = await FetchSingleCommitAsync(owner, repo, sha, branchName, accessToken);
+                    if (commit != null)
+                        yield return commit;
+                }
+
+                if (commits.Count < 100) break; // last page
+                page++;
             }
- 
-            return (tempPath, "");
-        }
-        catch (Exception ex)
-        {
-            CleanupTempDir(tempPath);
-            return ("", $"Clone error: {ex.Message}");
         }
     }
- 
+
+    private async Task<GitCommit?> FetchSingleCommitAsync(
+        string owner, string repo, string sha, string branch, string accessToken)
+    {
+        // Request raw diff format directly — same format as git diff-tree output
+        var client = CreateClient(accessToken);
+        client.DefaultRequestHeaders.Accept.Clear();
+        client.DefaultRequestHeaders.Accept.Add(
+            new MediaTypeWithQualityHeaderValue("application/vnd.github.v3.diff"));
+
+        var diffUrl = $"https://api.github.com/repos/{owner}/{repo}/commits/{sha}";
+
+        // First fetch metadata (author, date, message) as JSON
+        var metaUrl = $"https://api.github.com/repos/{owner}/{repo}/commits/{sha}";
+        var meta = await ApiGetJson<JsonElement>(metaUrl, accessToken);
+
+        string author = "";
+        string email = "";
+        DateTime date = DateTime.UtcNow;
+        string message = "";
+
+        if (meta.ValueKind == JsonValueKind.Object)
+        {
+            var commitObj = meta.GetProperty("commit");
+            author = commitObj.GetProperty("author").GetProperty("name").GetString() ?? "";
+            email = commitObj.GetProperty("author").GetProperty("email").GetString() ?? "";
+            message = commitObj.GetProperty("message").GetString() ?? "";
+            DateTime.TryParse(
+                commitObj.GetProperty("author").GetProperty("date").GetString(),
+                out date);
+        }
+
+        // Now fetch the raw diff
+        var diffResponse = await client.GetAsync(diffUrl);
+        var rawDiff = await diffResponse.Content.ReadAsStringAsync();
+
+        var changedLines = ParseDiff(rawDiff);
+
+        return new GitCommit(sha, author, email, date, branch, message, changedLines);
+    }
+
     /// <summary>
-    /// Quick reachability check using git ls-remote — does not download history.
-    /// Returns (true, "") if the repo is accessible, (false, errorMessage) otherwise.
+    /// Parses a raw unified diff (same format from API or git diff-tree).
+    /// Only extracts added lines (+) since those are what we scan for leaks.
     /// </summary>
+    private static List<(string FilePath, int LineNumber, string Content)> ParseDiff(string diff)
+    {
+        var result = new List<(string, int, string)>();
+        string currentFile = "";
+        int lineNumber = 0;
+
+        foreach (var line in diff.Split('\n'))
+        {
+            if (line.StartsWith("+++ b/"))
+            {
+                currentFile = line[6..].Trim();
+                lineNumber = 0;
+            }
+            else if (line.StartsWith("@@"))
+            {
+                var match = Regex.Match(line, @"\+(\d+)");
+                if (match.Success)
+                    lineNumber = int.Parse(match.Groups[1].Value) - 1;
+            }
+            else if (line.StartsWith("+") && !line.StartsWith("+++"))
+            {
+                lineNumber++;
+                var content = line[1..];
+                if (!string.IsNullOrWhiteSpace(content) && content.Length > 5)
+                    result.Add((currentFile, lineNumber, content));
+            }
+            else if (!line.StartsWith("-"))
+            {
+                lineNumber++;
+            }
+        }
+
+        return result;
+    }
+
+    // ─────────────────────────────────────────────
+    //  REMOTE: VALIDATION
+    // ─────────────────────────────────────────────
+
     public async Task<(bool ok, string error)> ValidateRemoteUrl(
         string repoUrl,
         string? accessToken,
@@ -72,121 +185,100 @@ public class GitService : IGitService
     {
         try
         {
-            var authUrl = BuildAuthenticatedUrl(repoUrl, accessToken, provider);
-            var (_, stderr, exitCode) = await RunGitCommandRaw(null, $"ls-remote --heads \"{authUrl}\"");
-            return exitCode == 0
+            var (owner, repo) = ParseOwnerRepo(repoUrl);
+            var url = $"https://api.github.com/repos/{owner}/{repo}";
+            var result = await ApiGetJson<JsonElement>(url, accessToken ?? "");
+            var ok = result.ValueKind == JsonValueKind.Object && result.TryGetProperty("id", out _);
+            return ok
                 ? (true, "")
-                : (false, ParseGitError(stderr, repoUrl));
+                : (false, "Repository not found or inaccessible.");
         }
         catch (Exception ex)
         {
             return (false, ex.Message);
         }
     }
- 
-    /// <summary>
-    /// Safely deletes a temp directory created during a remote clone.
-    /// </summary>
-    public void CleanupTempDir(string path)
+
+    // ─────────────────────────────────────────────
+    //  REMOTE: API HELPERS
+    // ─────────────────────────────────────────────
+
+    private async Task<List<string>> GetApiBranches(string owner, string repo, string accessToken)
     {
-        if (string.IsNullOrEmpty(path)) return;
-        try
-        {
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, recursive: true);
-                _logger.LogInformation("Cleaned up temp clone: {Path}", path);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning("Could not clean up temp dir {Path}: {Error}", path, ex.Message);
-        }
+        var url = $"https://api.github.com/repos/{owner}/{repo}/branches?per_page=100";
+        var result = await ApiGetJson<JsonElement>(url, accessToken);
+        if (result.ValueKind != JsonValueKind.Array) return new List<string>();
+        return result.EnumerateArray()
+                     .Select(b => b.GetProperty("name").GetString()!)
+                     .Where(b => !string.IsNullOrEmpty(b))
+                     .ToList();
     }
- 
-    // ─────────────────────────────────────────────
-    //  URL HELPERS
-    // ─────────────────────────────────────────────
- 
-    /// <summary>
-    /// Builds an authenticated HTTPS clone URL for each supported provider.
-    /// Handles SSH→HTTPS conversion automatically.
-    /// </summary>
-    private static string BuildAuthenticatedUrl(
-        string repoUrl, string? token, RepoProvider provider)
+
+    private async Task<string> GetDefaultBranch(string owner, string repo, string accessToken)
     {
-        if (string.IsNullOrWhiteSpace(token))
-            return repoUrl;
- 
+        var url = $"https://api.github.com/repos/{owner}/{repo}";
+        var result = await ApiGetJson<JsonElement>(url, accessToken);
+        return result.ValueKind == JsonValueKind.Object
+            ? result.GetProperty("default_branch").GetString() ?? "main"
+            : "main";
+    }
+
+    private async Task<T> ApiGetJson<T>(string url, string accessToken)
+    {
+        var client = CreateClient(accessToken);
+        client.DefaultRequestHeaders.Accept.Clear();
+        client.DefaultRequestHeaders.Accept.Add(
+            new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+
+        var response = await client.GetAsync(url);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync();
+        return JsonSerializer.Deserialize<T>(json)!;
+    }
+
+    private HttpClient CreateClient(string accessToken)
+    {
+        var client = _httpClientFactory.CreateClient("github");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("GitLeaker/1.0");
+        if (!string.IsNullOrWhiteSpace(accessToken))
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", accessToken);
+        return client;
+    }
+
+    /// <summary>
+    /// Parses owner/repo from any of these formats:
+    ///   https://github.com/owner/repo
+    ///   https://github.com/owner/repo.git
+    ///   git@github.com:owner/repo.git
+    /// </summary>
+    private static (string owner, string repo) ParseOwnerRepo(string repoUrl)
+    {
         var url = repoUrl.Trim();
- 
-        // SSH URLs (git@github.com:user/repo.git) can't embed tokens — convert first
+
         if (url.StartsWith("git@"))
-            url = ConvertSshToHttps(url);
- 
-        var uri = new Uri(url);
-        provider = provider == RepoProvider.Auto ? DetectProvider(uri.Host) : provider;
- 
-        // Token embedding format differs per provider:
-        //  GitHub:       https://TOKEN@github.com/...
-        //  GitLab:       https://oauth2:TOKEN@gitlab.com/...
-        //  Bitbucket:    https://x-token-auth:TOKEN@bitbucket.org/...
-        //  Azure DevOps: https://anything:TOKEN@dev.azure.com/...
-        //  Generic:      https://TOKEN@host/...
-        var userInfo = provider switch
         {
-            RepoProvider.GitLab => $"oauth2:{token}",
-            RepoProvider.Bitbucket => $"x-token-auth:{token}",
-            RepoProvider.AzureDevOps => $"anon:{token}",
-            _ => token
-        };
- 
-        return $"{uri.Scheme}://{userInfo}@{uri.Host}{uri.AbsolutePath}";
+            // git@github.com:owner/repo.git
+            var match = Regex.Match(url, @"git@[^:]+:([^/]+)/(.+?)(?:\.git)?$");
+            if (match.Success)
+                return (match.Groups[1].Value, match.Groups[2].Value);
+        }
+        else
+        {
+            // https://github.com/owner/repo[.git]
+            var uri = new Uri(url);
+            var parts = uri.AbsolutePath.Trim('/').TrimEnd('/').Split('/');
+            if (parts.Length >= 2)
+                return (parts[0], parts[1].Replace(".git", ""));
+        }
+
+        throw new ArgumentException($"Cannot parse owner/repo from URL: {repoUrl}");
     }
- 
-    private static RepoProvider DetectProvider(string host) => host.ToLower() switch
-    {
-        var h when h.Contains("github") => RepoProvider.GitHub,
-        var h when h.Contains("gitlab") => RepoProvider.GitLab,
-        var h when h.Contains("bitbucket") => RepoProvider.Bitbucket,
-        var h when h.Contains("dev.azure") || h.Contains("visualstudio") => RepoProvider.AzureDevOps,
-        _ => RepoProvider.Generic
-    };
- 
-    private static string ConvertSshToHttps(string sshUrl)
-    {
-        // git@github.com:user/repo.git  →  https://github.com/user/repo.git
-        var match = Regex.Match(sshUrl, @"git@([^:]+):(.+)");
-        return match.Success
-            ? $"https://{match.Groups[1].Value}/{match.Groups[2].Value}"
-            : sshUrl;
-    }
- 
-    private static string SanitizeUrlForLog(string url)
-    {
-        try { var u = new Uri(url); return $"{u.Scheme}://{u.Host}{u.AbsolutePath}"; }
-        catch { return "[url]"; }
-    }
- 
-    private static string ParseGitError(string stderr, string repoUrl)
-    {
-        if (stderr.Contains("not found") || stderr.Contains("does not exist"))
-            return "Repository not found. Check the URL and make sure it is correct.";
-        if (stderr.Contains("Authentication failed") || stderr.Contains("could not read Username"))
-            return "Authentication failed. Your access token may be missing, expired, or lack 'repo' scope.";
-        if (stderr.Contains("unable to connect") || stderr.Contains("Could not resolve host"))
-            return "Network error — could not reach the remote host.";
-        return stderr.Trim()
-                     .Split('\n')
-                     .LastOrDefault(l => l.StartsWith("fatal:") || l.StartsWith("error:"))
-                     ?.Trim()
-               ?? "Unknown git error. Check your URL and token.";
-    }
- 
+
     // ─────────────────────────────────────────────
-    //  LOCAL REPO OPERATIONS
+    //  LOCAL REPO OPERATIONS (unchanged)
     // ─────────────────────────────────────────────
- 
+
     public async Task<bool> IsGitRepo(string path)
     {
         try
@@ -196,7 +288,7 @@ public class GitService : IGitService
         }
         catch { return false; }
     }
- 
+
     public async Task<List<string>> GetBranches(string repoPath)
     {
         var (output, _, _) = await RunGitCommandRaw(repoPath, "branch -a --format=%(refname:short)");
@@ -205,13 +297,13 @@ public class GitService : IGitService
                      .Where(b => !string.IsNullOrEmpty(b))
                      .ToList();
     }
- 
+
     public async Task<string> GetCurrentBranch(string repoPath)
     {
         var (output, _, _) = await RunGitCommandRaw(repoPath, "rev-parse --abbrev-ref HEAD");
         return output.Trim();
     }
- 
+
     public async Task<IAsyncEnumerable<GitCommit>> GetCommitsAsync(
         string repoPath,
         string? branch = null,
@@ -219,93 +311,66 @@ public class GitService : IGitService
         bool allBranches = false)
     {
         var args = new StringBuilder("log ");
- 
+
         if (allBranches)
             args.Append("--all ");
         else if (!string.IsNullOrEmpty(branch))
             args.Append($"{branch} ");
- 
+
         if (daysBack.HasValue)
             args.Append($"--since=\"{daysBack} days ago\" ");
- 
+
         args.Append("--pretty=format:COMMIT_START|%H|%an|%ae|%aI|%s|COMMIT_END");
- 
+
         var (logOutput, _, _) = await RunGitCommandRaw(repoPath, args.ToString());
         var currentBranch = branch ?? await GetCurrentBranch(repoPath);
- 
+
         return ParseCommitsAsync(logOutput, repoPath, currentBranch);
     }
- 
+
     private async IAsyncEnumerable<GitCommit> ParseCommitsAsync(
         string logOutput, string repoPath, string branch)
     {
         var lines = logOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries);
- 
+
         foreach (var line in lines)
         {
             if (!line.StartsWith("COMMIT_START|")) continue;
- 
+
             var parts = line.Replace("COMMIT_START|", "").Replace("|COMMIT_END", "").Split('|');
             if (parts.Length < 5) continue;
- 
+
             string hash = parts[0];
             string author = parts[1];
             string email = parts[2];
             DateTime.TryParse(parts[3], out var date);
             string message = parts.Length > 4 ? parts[4] : "";
- 
-            var changedLines = await GetChangedLines(repoPath, hash);
+
+            var changedLines = await GetChangedLinesLocal(repoPath, hash);
             yield return new GitCommit(hash, author, email, date, branch, message, changedLines);
         }
     }
- 
-    private async Task<List<(string FilePath, int LineNumber, string Content)>> GetChangedLines(
+
+    private async Task<List<(string FilePath, int LineNumber, string Content)>> GetChangedLinesLocal(
         string repoPath, string commitHash)
     {
-        var result = new List<(string, int, string)>();
         try
         {
             var (diff, _, _) = await RunGitCommandRaw(repoPath, $"diff-tree --no-commit-id -r -p {commitHash}");
-            if (string.IsNullOrEmpty(diff)) return result;
- 
-            string currentFile = "";
-            int lineNumber = 0;
- 
-            foreach (var line in diff.Split('\n'))
-            {
-                if (line.StartsWith("+++ b/"))
-                {
-                    currentFile = line[6..].Trim();
-                    lineNumber = 0;
-                }
-                else if (line.StartsWith("@@"))
-                {
-                    var match = Regex.Match(line, @"\+(\d+)");
-                    if (match.Success)
-                        lineNumber = int.Parse(match.Groups[1].Value) - 1;
-                }
-                else if (line.StartsWith("+") && !line.StartsWith("+++"))
-                {
-                    lineNumber++;
-                    string content = line[1..];
-                    if (!string.IsNullOrWhiteSpace(content) && content.Length > 5)
-                        result.Add((currentFile, lineNumber, content));
-                }
-                else if (!line.StartsWith("-"))
-                {
-                    lineNumber++;
-                }
-            }
+            return string.IsNullOrEmpty(diff)
+                ? new List<(string, int, string)>()
+                : ParseDiff(diff);
         }
-        catch { }
- 
-        return result;
+        catch
+        {
+            return new List<(string, int, string)>();
+        }
     }
- 
+
     // ─────────────────────────────────────────────
     //  GIT PROCESS RUNNER
     // ─────────────────────────────────────────────
- 
+
     private static async Task<(string stdout, string stderr, int exitCode)> RunGitCommandRaw(
         string? workingDir, string arguments)
     {
@@ -317,19 +382,18 @@ public class GitService : IGitService
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
- 
+
         if (!string.IsNullOrEmpty(workingDir))
             psi.WorkingDirectory = workingDir;
- 
-        // Prevent git from hanging waiting for credentials in non-interactive environments
+
         psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
         psi.Environment["GIT_ASKPASS"] = "echo";
- 
+
         using var process = Process.Start(psi)!;
         var stdout = await process.StandardOutput.ReadToEndAsync();
         var stderr = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
- 
+
         return (stdout, stderr, process.ExitCode);
     }
 }

@@ -8,11 +8,11 @@ public class ScannerService : IScannerService
     private readonly IEntropyService _entropy;
     private readonly IPatternService _patterns;
     private readonly IGitService _git;
-    private readonly ITokenService   _token;
- 
+    private readonly ITokenService _token;
+
     // In-memory store for MVP (replace with DB in production)
     private static readonly Dictionary<string, ScanResult> _scans = new();
- 
+
     public ScannerService(
         IEntropyService entropy,
         IPatternService patterns,
@@ -22,21 +22,19 @@ public class ScannerService : IScannerService
         _entropy = entropy;
         _patterns = patterns;
         _git = git;
-        _token    = token;
+        _token = token;
     }
- 
+
     public async Task<string> StartScanAsync(ScanRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.RepoPath) && string.IsNullOrWhiteSpace(request.RepoUrl))
             throw new ArgumentException("Either RepoPath (local) or RepoUrl (remote) must be provided.");
-        
+
         if (string.IsNullOrWhiteSpace(request.AccessToken))
             request.AccessToken = await _token.GetGitHubTokenAsync();
- 
-        var displayName = request.IsRemote
-            ? request.RepoUrl!
-            : request.RepoPath!;
- 
+
+        var displayName = request.IsRemote ? request.RepoUrl! : request.RepoPath!;
+
         var scan = new ScanResult
         {
             RepoPath = displayName,
@@ -44,76 +42,63 @@ public class ScannerService : IScannerService
             IsRemote = request.IsRemote,
             Status = ScanStatus.Running
         };
- 
+
         _scans[scan.ScanId] = scan;
- 
+
         // Fire and forget — client polls /status
         _ = Task.Run(async () => await ExecuteScanAsync(scan, request));
- 
+
         return scan.ScanId;
     }
- 
+
     private async Task ExecuteScanAsync(ScanResult scan, ScanRequest request)
     {
-        string? clonedPath = null;
- 
         try
         {
-            string repoPath;
- 
+            IAsyncEnumerable<GitCommit> commits;
+
             if (request.IsRemote)
             {
-                // ── REMOTE: clone into temp dir first ──────────────────
-                var (path, cloneError) = await _git.CloneRemoteRepo(
+                // ── REMOTE: use GitHub API directly, no cloning ────────
+                commits = await _git.GetCommitsFromApiAsync(
                     request.RepoUrl!,
-                    request.AccessToken,
-                    request.Provider);
- 
-                if (!string.IsNullOrEmpty(cloneError))
-                {
-                    scan.Status = ScanStatus.Failed;
-                    scan.Error = cloneError;
-                    return;
-                }
- 
-                clonedPath = path;
-                repoPath = path;
-                scan.ClonedToPath = path;
+                    request.AccessToken!,
+                    request.BranchFilter,
+                    request.DaysBack,
+                    request.ScanAllBranches);
             }
             else
             {
-                // ── LOCAL: validate path exists and is a git repo ──────
-                repoPath = request.RepoPath!;
- 
-                if (!await _git.IsGitRepo(repoPath))
+                // ── LOCAL: validate path, use git CLI ──────────────────
+                if (!await _git.IsGitRepo(request.RepoPath!))
                 {
                     scan.Status = ScanStatus.Failed;
                     scan.Error = "Not a valid git repository. Check the path and make sure git is initialised.";
                     return;
                 }
+
+                commits = await _git.GetCommitsAsync(
+                    request.RepoPath!,
+                    request.BranchFilter,
+                    request.DaysBack,
+                    request.ScanAllBranches);
             }
- 
+
             // ── SCAN ────────────────────────────────────────────────────
-            var commits = await _git.GetCommitsAsync(
-                repoPath,
-                request.BranchFilter,
-                request.DaysBack,
-                request.ScanAllBranches);
- 
             var seenKeys = new HashSet<string>();
- 
+
             await foreach (var commit in commits)
             {
                 scan.CommitsScanned++;
                 var processedFiles = new HashSet<string>();
- 
+
                 foreach (var (filePath, lineNumber, content) in commit.ChangedLines)
                 {
                     if (ShouldSkipFile(filePath)) continue;
                     processedFiles.Add(filePath);
- 
+
                     var findings = AnalyzeLine(content, commit, filePath, lineNumber);
- 
+
                     foreach (var finding in findings)
                     {
                         var key = $"{filePath}:{lineNumber}:{finding.SecretType}";
@@ -122,10 +107,10 @@ public class ScannerService : IScannerService
                         scan.Findings.Add(finding);
                     }
                 }
- 
+
                 scan.FilesScanned += processedFiles.Count;
             }
- 
+
             scan.Status = ScanStatus.Completed;
             scan.CompletedAt = DateTime.UtcNow;
         }
@@ -134,29 +119,24 @@ public class ScannerService : IScannerService
             scan.Status = ScanStatus.Failed;
             scan.Error = ex.Message;
         }
-        finally
-        {
-            // Always clean up cloned temp directory
-            if (clonedPath != null)
-                _git.CleanupTempDir(clonedPath);
-        }
+        // No finally/cleanup needed — remote scans never touch the filesystem
     }
- 
+
     private List<LeakFinding> AnalyzeLine(
         string line, GitCommit commit, string filePath, int lineNumber)
     {
         var findings = new List<LeakFinding>();
- 
+
         // 1. Pattern-based detection
         var patternMatches = _patterns.Scan(line);
         foreach (var (pattern, match) in patternMatches)
         {
             var secretValue = match.Groups.Count > 1 ? match.Groups[^1].Value : match.Value;
             var entropy = _entropy.Calculate(secretValue);
- 
+
             if (pattern.RequireEntropy && entropy < pattern.MinEntropy)
                 continue;
- 
+
             findings.Add(new LeakFinding
             {
                 CommitHash = commit.Hash,
@@ -176,7 +156,7 @@ public class ScannerService : IScannerService
                 RemediationAdvice = pattern.Remediation
             });
         }
- 
+
         // 2. Entropy-only fallback (catches unknown secret formats)
         if (!findings.Any())
         {
@@ -203,10 +183,10 @@ public class ScannerService : IScannerService
                 });
             }
         }
- 
+
         return findings;
     }
- 
+
     private static bool ShouldSkipFile(string filePath)
     {
         var skipExtensions = new[] {
@@ -217,15 +197,15 @@ public class ScannerService : IScannerService
         var skipPaths = new[] {
             "node_modules/", ".git/", "vendor/", "dist/", "build/", "__pycache__/"
         };
- 
+
         var lower = filePath.ToLowerInvariant();
         return skipExtensions.Any(ext => lower.EndsWith(ext)) ||
                skipPaths.Any(path => lower.Contains(path));
     }
- 
+
     public ScanResult? GetScan(string scanId) =>
         _scans.GetValueOrDefault(scanId);
- 
+
     public List<ScanResult> GetAllScans() =>
         _scans.Values.OrderByDescending(s => s.StartedAt).ToList();
 }

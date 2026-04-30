@@ -135,7 +135,7 @@ public class ScanRepository : IScanRepository
                 HighLeaks     = d.HighLeaks,
                 MediumLeaks   = d.MediumLeaks,
                 LowLeaks      = d.LowLeaks,
-                RiskScore     = d.RiskScore,
+                RiskScore     = (double)d.RiskScore,
                 LastLeakDate  = d.LastLeakDate
             }).ToList(),
             BranchBreakdown = branchRows.Select(b => new BranchStats
@@ -143,7 +143,7 @@ public class ScanRepository : IScanRepository
                 Branch       = b.Branch,
                 TotalLeaks   = b.TotalLeaks,
                 CriticalLeaks = b.CriticalLeaks,
-                RiskScore    = b.RiskScore
+                RiskScore    = (double)b.RiskScore
             }).ToList(),
             Timeline = timelineRows.Select(t => new TimelinePoint
             {
@@ -216,10 +216,10 @@ public class ScanRepository : IScanRepository
     private record DevRow(
         string Author, string AuthorEmail,
         int TotalLeaks, int CriticalLeaks, int HighLeaks,
-        int MediumLeaks, int LowLeaks, double RiskScore, DateTime LastLeakDate);
+        int MediumLeaks, int LowLeaks, decimal RiskScore, DateTime LastLeakDate);
 
     private record BranchRow(
-        string Branch, int TotalLeaks, int CriticalLeaks, double RiskScore);
+        string Branch, int TotalLeaks, int CriticalLeaks, decimal RiskScore);
 
     private record TimelineRow(string Date, int Count, int Critical);
 }

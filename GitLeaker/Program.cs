@@ -1,4 +1,6 @@
 using AspNet.Security.OAuth.GitHub;
+using GitLeaker.Data;
+using GitLeaker.Data.Migrations;
 using GitLeaker.Middlewares;
 using GitLeaker.Services;
 using GitLeaker.Services.Interfaces;
@@ -12,8 +14,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
 builder.Services.AddHttpContextAccessor();
+
+// ── DB layer ──────────────────────────────────────────── ← NEW block
+builder.Services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
 
 builder.Services.AddScoped<IEntropyService, EntropyService>();
 builder.Services.AddScoped<IGitService, GitService>();
@@ -72,6 +76,11 @@ builder.Services.AddCors(options =>
 
 
 var app = builder.Build();
+
+// ── Run DB migrations ──────────────────────── 
+await MigrationRunner.RunAsync(
+    app.Configuration.GetConnectionString("DefaultConnection")!,
+    app.Logger);
 
 app.UseMiddleware<ExceptionMiddleware>();
 

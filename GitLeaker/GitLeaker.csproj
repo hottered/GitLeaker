@@ -9,14 +9,17 @@
 
     <ItemGroup>
         <PackageReference Include="AspNet.Security.OAuth.GitHub" Version="10.0.0" />
+        <PackageReference Include="Dapper" Version="2.1.72" />
         <PackageReference Include="Microsoft.AspNetCore.Authentication.Cookies" Version="2.3.9" />
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.1" />
+        <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />
         <PackageReference Include="Microsoft.VisualStudio.Web.CodeGeneration.Design" Version="10.0.2" />
         <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
     </ItemGroup>
 
     <ItemGroup>
       <Folder Include="Controllers\" />
+      <Folder Include="Data\Repositories\Interfaces\" />
     </ItemGroup>
 
 </Project>

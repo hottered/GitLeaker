@@ -5,11 +5,10 @@ namespace GitLeaker.Data.Migrations;
 
 public static class MigrationRunner
 {
-    public static async Task RunAsync(string connectionString, ILogger logger)
+    public static async Task RunAsync(string pathToRootOfProject, string connectionString, ILogger logger)
     {
         try
         {
-            // Step 1 — create the database if it doesn't exist
             var masterConn = connectionString.Replace(
                 "Database=GitLeakerDb", "Database=master",
                 StringComparison.OrdinalIgnoreCase);
@@ -24,9 +23,7 @@ public static class MigrationRunner
                     """);
             }
 
-            // Step 2 — create the migrations tracking table
             await using var db = new SqlConnection(connectionString);
-
             await db.ExecuteAsync("""
                 IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '_Migrations')
                 CREATE TABLE _Migrations (
@@ -34,13 +31,10 @@ public static class MigrationRunner
                     AppliedAt DATETIME2     NOT NULL DEFAULT GETUTCDATE()
                 );
                 """);
-
-            // Step 3 — find and run all .sql files in order
-            var migrationsPath = Path.Combine("E:\\CShapProjs\\GitLeaker\\GitLeaker\\Data", "Migrations");
+            var migrationsPath = Path.Combine(pathToRootOfProject, "Data", "Migrations");
             var files = Directory.GetFiles(migrationsPath, "*.sql")
-                                 .OrderBy(f => f)   // 001_, 002_ ordering
+                                 .OrderBy(f => f)
                                  .ToList();
-
             foreach (var file in files)
             {
                 var fileName = Path.GetFileName(file);

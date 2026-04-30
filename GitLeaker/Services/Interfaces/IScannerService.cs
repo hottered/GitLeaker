@@ -5,8 +5,6 @@ namespace GitLeaker.Services.Interfaces;
 public interface IScannerService
 {
     Task<string> StartScanAsync(ScanRequest request);
-
-    ScanResult? GetScan(string scanId);
-
-    List<ScanResult> GetAllScans();
+    Task<ScanResult?> GetScanAsync(string scanId);
+    Task<List<ScanResult>> GetAllScansAsync();
 }

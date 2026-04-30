@@ -4,5 +4,6 @@ namespace GitLeaker.Services.Interfaces;
 
 public interface IReportService
 {
-    ScanSummary GenerateSummary(ScanResult scan);
+    Task<ScanSummary> GenerateSummaryAsync(string scanId);
+    ScanSummary GenerateSummary(ScanResult scan); // kept for unit tests / in-memory fallback
 }

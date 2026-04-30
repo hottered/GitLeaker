@@ -1,0 +1,8 @@
+﻿CREATE OR ALTER PROCEDURE usp_GetScan
+    @ScanId NVARCHAR(36)
+    AS
+BEGIN
+    SET NOCOUNT ON;
+SELECT * FROM Scans    WHERE ScanId = @ScanId;
+SELECT * FROM Findings WHERE ScanId = @ScanId ORDER BY CommitDate DESC;
+END

@@ -1,3 +1,4 @@
+using GitLeaker.Enums;
 using GitLeaker.Models;
 
 namespace GitLeaker.Services.Interfaces;
@@ -22,8 +23,7 @@ public interface IGitService
         int? daysBack = null,
         bool allBranches = false);
  
-    Task<(bool ok, string error)> ValidateRemoteUrl(
+    Task<bool> ValidateRemoteUrl(
         string repoUrl,
-        string? accessToken,
-        RepoProvider provider = RepoProvider.Auto);
+        string? accessToken);
 }

@@ -1,3 +1,4 @@
+using GitLeaker.Enums;
 using GitLeaker.Models;
 using GitLeaker.Repositories.Interfaces;
 using GitLeaker.Services.Interfaces;
@@ -13,7 +14,6 @@ public class ReportService : IReportService
         _repo = repo;
     }
 
-    // Called from your controller — always goes to DB
     public async Task<ScanSummary> GenerateSummaryAsync(string scanId)
         => await _repo.GetScanSummaryAsync(scanId);
 

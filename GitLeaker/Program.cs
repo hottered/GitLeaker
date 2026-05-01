@@ -18,7 +18,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHttpContextAccessor();
 
-// ── DB layer ──────────────────────────────────────────── ← NEW block
+// ── DB layer ────────────────────────────────────────────
 builder.Services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
 builder.Services.AddScoped<IScanRepository, ScanRepository>();
 

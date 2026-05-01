@@ -1,3 +1,4 @@
+using GitLeaker.Enums;
 using GitLeaker.Models;
 using GitLeaker.Repositories.Interfaces;
 using GitLeaker.Services.Interfaces;
@@ -52,64 +53,57 @@ public class ScannerService : IScannerService
 
     private async Task ExecuteScanAsync(ScanResult scan, ScanRequest request)
     {
-        try
+        IAsyncEnumerable<GitCommit> commits;
+
+        if (request.IsRemote)
         {
-            IAsyncEnumerable<GitCommit> commits;
-
-            if (request.IsRemote)
-            {
-                commits = await _git.GetCommitsFromApiAsync(
-                    request.RepoUrl!, request.AccessToken!,
-                    request.BranchFilter, request.DaysBack, request.ScanAllBranches);
-            }
-            else
-            {
-                if (!await _git.IsGitRepo(request.RepoPath!))
-                {
-                    scan.Status = ScanStatus.Failed;
-                    scan.Error  = "Not a valid git repository.";
-                    await _repo.UpdateScanAsync(scan);
-                    return;
-                }
-
-                commits = await _git.GetCommitsAsync(
-                    request.RepoPath!, request.BranchFilter,
-                    request.DaysBack, request.ScanAllBranches);
-            }
-
-            var seenKeys = new HashSet<string>();
-
-            await foreach (var commit in commits)
-            {
-                scan.CommitsScanned++;
-                var processedFiles = new HashSet<string>();
-
-                foreach (var (filePath, lineNumber, content) in commit.ChangedLines)
-                {
-                    if (ShouldSkipFile(filePath)) continue;
-                    processedFiles.Add(filePath);
-
-                    foreach (var finding in AnalyzeLine(content, commit, filePath, lineNumber))
-                    {
-                        var key = $"{filePath}:{lineNumber}:{finding.SecretType}";
-                        if (!seenKeys.Add(key)) continue;
-
-                        // Written straight to DB — no in-memory list
-                        await _repo.AddFindingAsync(scan.ScanId, finding);
-                    }
-                }
-
-                scan.FilesScanned += processedFiles.Count;
-            }
-
-            scan.Status      = ScanStatus.Completed;
-            scan.CompletedAt = DateTime.UtcNow;
+            commits = await _git.GetCommitsFromApiAsync(
+                request.RepoUrl!, request.AccessToken!,
+                request.BranchFilter, request.DaysBack, request.ScanAllBranches);
         }
-        catch (Exception ex)
+        else
         {
-            scan.Status = ScanStatus.Failed;
-            scan.Error  = ex.Message;
+            if (!await _git.IsGitRepo(request.RepoPath!))
+            {
+                scan.Status = ScanStatus.Failed;
+                scan.Error  = "Not a valid git repository.";
+                await _repo.UpdateScanAsync(scan);
+                return;
+            }
+
+            commits = await _git.GetCommitsAsync(
+                request.RepoPath!, request.BranchFilter,
+                request.DaysBack, request.ScanAllBranches);
         }
+
+        var seenKeys = new HashSet<string>();
+
+        await foreach (var commit in commits)
+        {
+            scan.CommitsScanned++;
+            var processedFiles = new HashSet<string>();
+
+            foreach (var (filePath, lineNumber, content) in commit.ChangedLines)
+            {
+                if (ShouldSkipFile(filePath)) continue;
+                processedFiles.Add(filePath);
+
+                foreach (var finding in AnalyzeLine(content, commit, filePath, lineNumber))
+                {
+                    var key = $"{filePath}:{lineNumber}:{finding.SecretType}";
+                    if (!seenKeys.Add(key)) continue;
+
+                    // Written straight to DB — no in-memory list
+                    await _repo.AddFindingAsync(scan.ScanId, finding);
+                }
+            }
+
+            scan.FilesScanned += processedFiles.Count;
+        }
+
+        scan.Status      = ScanStatus.Completed;
+        scan.CompletedAt = DateTime.UtcNow;
+
 
         await _repo.UpdateScanAsync(scan);
     }

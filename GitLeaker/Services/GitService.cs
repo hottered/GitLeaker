@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using GitLeaker.Enums;
 using GitLeaker.Models;
 using GitLeaker.Services.Interfaces;
 
@@ -18,10 +19,6 @@ public class GitService : IGitService
         _logger = logger;
         _httpClientFactory = httpClientFactory;
     }
-
-    // ─────────────────────────────────────────────
-    //  REMOTE: GITHUB API (no cloning)
-    // ─────────────────────────────────────────────
 
     /// <summary>
     /// Streams commits + their diffs directly from the GitHub API.
@@ -98,7 +95,6 @@ public class GitService : IGitService
     private async Task<GitCommit?> FetchSingleCommitAsync(
         string owner, string repo, string sha, string branch, string accessToken)
     {
-        // Request raw diff format directly — same format as git diff-tree output
         var client = CreateClient(accessToken);
         client.DefaultRequestHeaders.Accept.Clear();
         client.DefaultRequestHeaders.Accept.Add(
@@ -106,9 +102,7 @@ public class GitService : IGitService
 
         var diffUrl = $"https://api.github.com/repos/{owner}/{repo}/commits/{sha}";
 
-        // First fetch metadata (author, date, message) as JSON
-        var metaUrl = $"https://api.github.com/repos/{owner}/{repo}/commits/{sha}";
-        var meta = await ApiGetJson<JsonElement>(metaUrl, accessToken);
+        var meta = await ApiGetJson<JsonElement>(diffUrl, accessToken);
 
         string author = "";
         string email = "";
@@ -126,7 +120,6 @@ public class GitService : IGitService
                 out date);
         }
 
-        // Now fetch the raw diff
         var diffResponse = await client.GetAsync(diffUrl);
         var rawDiff = await diffResponse.Content.ReadAsStringAsync();
 
@@ -174,34 +167,15 @@ public class GitService : IGitService
         return result;
     }
 
-    // ─────────────────────────────────────────────
-    //  REMOTE: VALIDATION
-    // ─────────────────────────────────────────────
-
-    public async Task<(bool ok, string error)> ValidateRemoteUrl(
+    public async Task<bool> ValidateRemoteUrl(
         string repoUrl,
-        string? accessToken,
-        RepoProvider provider = RepoProvider.Auto)
+        string? accessToken)
     {
-        try
-        {
-            var (owner, repo) = ParseOwnerRepo(repoUrl);
-            var url = $"https://api.github.com/repos/{owner}/{repo}";
-            var result = await ApiGetJson<JsonElement>(url, accessToken ?? "");
-            var ok = result.ValueKind == JsonValueKind.Object && result.TryGetProperty("id", out _);
-            return ok
-                ? (true, "")
-                : (false, "Repository not found or inaccessible.");
-        }
-        catch (Exception ex)
-        {
-            return (false, ex.Message);
-        }
+        var (owner, repo) = ParseOwnerRepo(repoUrl);
+        var url = $"https://api.github.com/repos/{owner}/{repo}";
+        var result = await ApiGetJson<JsonElement>(url, accessToken ?? "");
+        return result.ValueKind == JsonValueKind.Object && result.TryGetProperty("id", out _);
     }
-
-    // ─────────────────────────────────────────────
-    //  REMOTE: API HELPERS
-    // ─────────────────────────────────────────────
 
     private async Task<List<string>> GetApiBranches(string owner, string repo, string accessToken)
     {
@@ -275,18 +249,13 @@ public class GitService : IGitService
         throw new ArgumentException($"Cannot parse owner/repo from URL: {repoUrl}");
     }
 
-    // ─────────────────────────────────────────────
-    //  LOCAL REPO OPERATIONS (unchanged)
-    // ─────────────────────────────────────────────
-
     public async Task<bool> IsGitRepo(string path)
     {
-        try
-        {
-            var (output, _, exitCode) = await RunGitCommandRaw(path, "rev-parse --git-dir");
-            return exitCode == 0 && !string.IsNullOrWhiteSpace(output);
-        }
-        catch { return false; }
+        if (!Directory.Exists(path))
+            throw new DirectoryNotFoundException($"Path does not exist: {path}");
+        
+        var (output, _, exitCode) = await RunGitCommandRaw(path, "rev-parse --git-dir");
+        return exitCode == 0 && !string.IsNullOrWhiteSpace(output);
     }
 
     public async Task<List<string>> GetBranches(string repoPath)
@@ -354,22 +323,11 @@ public class GitService : IGitService
     private async Task<List<(string FilePath, int LineNumber, string Content)>> GetChangedLinesLocal(
         string repoPath, string commitHash)
     {
-        try
-        {
-            var (diff, _, _) = await RunGitCommandRaw(repoPath, $"diff-tree --no-commit-id -r -p {commitHash}");
-            return string.IsNullOrEmpty(diff)
-                ? new List<(string, int, string)>()
-                : ParseDiff(diff);
-        }
-        catch
-        {
-            return new List<(string, int, string)>();
-        }
+        var (diff, _, _) = await RunGitCommandRaw(repoPath, $"diff-tree --no-commit-id -r -p {commitHash}");
+        return string.IsNullOrEmpty(diff)
+            ? new List<(string, int, string)>()
+            : ParseDiff(diff);
     }
-
-    // ─────────────────────────────────────────────
-    //  GIT PROCESS RUNNER
-    // ─────────────────────────────────────────────
 
     private static async Task<(string stdout, string stderr, int exitCode)> RunGitCommandRaw(
         string? workingDir, string arguments)

@@ -1,3 +1,4 @@
+using GitLeaker.Enums;
 using GitLeaker.Models;
 using GitLeaker.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
@@ -30,22 +31,15 @@ public class ScanController : ControllerBase
     [HttpPost("start")]
     public async Task<IActionResult> StartScan([FromBody] ScanRequest request)
     {
-        try
+        var scanId = await _scanner.StartScanAsync(request);
+        return Ok(new
         {
-            var scanId = await _scanner.StartScanAsync(request);
-            return Ok(new
-            {
-                scanId,
-                mode    = request.IsRemote ? "remote" : "local",
-                message = request.IsRemote
-                    ? $"Scanning {request.RepoUrl}..."
-                    : "Scan started successfully."
-            });
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
+            scanId,
+            mode    = request.IsRemote ? "remote" : "local",
+            message = request.IsRemote
+                ? $"Scanning {request.RepoUrl}..."
+                : "Scan started successfully."
+        });
     }
 
     /// <summary>Validate a remote repo URL before starting a full scan.</summary>
@@ -55,17 +49,23 @@ public class ScanController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.RepoUrl))
             return BadRequest(new { error = "repoUrl is required." });
 
-        var (ok, error) = await _git.ValidateRemoteUrl(
+        var ok = await _git.ValidateRemoteUrl(
             request.RepoUrl,
-            request.AccessToken,
-            request.Provider);
+            request.AccessToken);
 
-        return Ok(new
-        {
-            reachable = ok,
-            error     = ok ? null : error,
-            provider  = DetectProviderName(request.RepoUrl)
-        });
+        return ok
+            ? Ok(new
+            {
+                reachable = true,
+                error     = "The project exist on the remote repository",
+                provider  = DetectProviderName(request.RepoUrl)
+            })
+            : BadRequest(new
+            {
+                reachable = false,
+                error     = "Could not validate remote repository.",
+                provider  = DetectProviderName(request.RepoUrl)
+            });
     }
 
     /// <summary>Poll scan status — call every 1-2s while Status == "Running"</summary>
@@ -198,5 +198,4 @@ public class ScanController : ControllerBase
 
 public record ValidateRemoteRequest(
     string RepoUrl,
-    string? AccessToken,
-    RepoProvider Provider = RepoProvider.Auto);
+    string? AccessToken);

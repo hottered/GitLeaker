@@ -1,7 +1,9 @@
 using GitLeaker.Enums;
+using GitLeaker.Hubs;
 using GitLeaker.Models;
 using GitLeaker.Repositories.Interfaces;
 using GitLeaker.Services.Interfaces;
+using Microsoft.AspNetCore.SignalR;
 
 namespace GitLeaker.Services;
 
@@ -12,19 +14,25 @@ public class ScannerService : IScannerService
     private readonly IGitService _git;
     private readonly ITokenService _token;
     private readonly IScanRepository _repo;
+    private readonly IHubContext<ScanHub> _hub;
+    private readonly ILogger<ScannerService> _logger;
 
     public ScannerService(
         IEntropyService entropy,
         IPatternService patterns,
         IGitService git,
         ITokenService token,
-        IScanRepository repo)
+        IScanRepository repo,
+        IHubContext<ScanHub> hub,
+        ILogger<ScannerService> logger)
     {
         _entropy  = entropy;
         _patterns = patterns;
         _git      = git;
         _token    = token;
         _repo     = repo;
+        _hub      = hub;
+        _logger   = logger;
     }
 
     public async Task<string> StartScanAsync(ScanRequest request)
@@ -46,12 +54,14 @@ public class ScannerService : IScannerService
         await _repo.CreateScanAsync(scan);
 
         // Fire-and-forget — client polls for status
-        _ = Task.Run(async () => await ExecuteScanAsync(scan, request));
+        _ = Task.Run(() => ExecuteScanAsync(scan, request, CancellationToken.None))
+            .ContinueWith(t => _logger.LogError(t.Exception, "Scan {ScanId} crashed", scan.ScanId),
+                TaskContinuationOptions.OnlyOnFaulted);
 
         return scan.ScanId;
     }
 
-    private async Task ExecuteScanAsync(ScanResult scan, ScanRequest request)
+    private async Task ExecuteScanAsync(ScanResult scan, ScanRequest request, CancellationToken ct)
     {
         IAsyncEnumerable<GitCommit> commits;
 
@@ -68,6 +78,10 @@ public class ScannerService : IScannerService
                 scan.Status = ScanStatus.Failed;
                 scan.Error  = "Not a valid git repository.";
                 await _repo.UpdateScanAsync(scan);
+                await _hub.Clients.Group(scan.ScanId).SendAsync("ScanFailed", new
+                {
+                    error = scan.Error
+                }, ct);
                 return;
             }
 
@@ -99,6 +113,15 @@ public class ScannerService : IScannerService
             }
 
             scan.FilesScanned += processedFiles.Count;
+            // Šalji update za svaki commit
+            await _hub.Clients.Group(scan.ScanId).SendAsync("CommitScanned", new
+            {
+                commitHash    = commit.Hash,
+                commitMessage = commit.Message,
+                author        = commit.Author,
+                totalCommits  = scan.CommitsScanned,
+                totalFiles    = scan.FilesScanned,
+            }, ct);
         }
 
         scan.Status      = ScanStatus.Completed;
@@ -106,6 +129,11 @@ public class ScannerService : IScannerService
 
 
         await _repo.UpdateScanAsync(scan);
+        await _hub.Clients.Group(scan.ScanId).SendAsync("ScanCompleted", new
+        {
+            totalCommits = scan.CommitsScanned,
+            totalFiles   = scan.FilesScanned,
+        }, ct);
     }
 
     public async Task<ScanResult?> GetScanAsync(string scanId)
@@ -113,8 +141,6 @@ public class ScannerService : IScannerService
 
     public async Task<List<ScanResult>> GetAllScansAsync()
         => await _repo.GetAllScansAsync();
-
-    // ── private helpers — completely unchanged ────────────────────────
 
     private List<LeakFinding> AnalyzeLine(
         string line, GitCommit commit, string filePath, int lineNumber)

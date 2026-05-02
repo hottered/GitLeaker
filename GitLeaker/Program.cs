@@ -1,6 +1,7 @@
 using AspNet.Security.OAuth.GitHub;
 using GitLeaker.Data;
 using GitLeaker.Data.Migrations;
+using GitLeaker.Hubs;
 using GitLeaker.Middlewares;
 using GitLeaker.Repositories;
 using GitLeaker.Repositories.Interfaces;
@@ -28,6 +29,8 @@ builder.Services.AddScoped<IPatternService, PatternService>();
 builder.Services.AddScoped<IReportService, ReportService>();
 builder.Services.AddScoped<IScannerService, ScannerService>();
 builder.Services.AddScoped<ITokenService, TokenService>();
+
+builder.Services.AddSignalR();
 
 builder.Services.AddHttpClient("github", client =>
 {
@@ -71,7 +74,7 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
-        policy.WithOrigins("http://localhost:5075", "http://localhost:3000")
+        policy.WithOrigins("http://localhost:5075", "http://localhost:3000", "http://localhost:5173")
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials());
@@ -86,6 +89,9 @@ await MigrationRunner.RunAsync(
     app.Configuration.GetConnectionString("DefaultConnection")!,
     app.Logger);
 
+app.UseCors("AllowFrontend");
+app.MapHub<ScanHub>("/hubs/scan");
+
 app.UseMiddleware<ExceptionMiddleware>();
 
 if (app.Environment.IsDevelopment())
@@ -95,7 +101,6 @@ if (app.Environment.IsDevelopment())
 
 }
 
-app.UseCors("AllowFrontend");
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
